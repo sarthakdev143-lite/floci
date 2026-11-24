@@ -71,6 +71,8 @@ import java.util.stream.Collectors;
 public class SsoAdminService implements Resettable, StoredResourceArns {
     private static final String BOOTSTRAP_INSTANCE = "instance/ssoins-7223b02a5d9f7c8e";
     private static final String IDENTITY_STORE_ID = "d-9067f2a3c1";
+    /** The service principal an organization registers a delegated administrator for IAM Identity Center under. */
+    private static final String SSO_SERVICE_PRINCIPAL = "sso.amazonaws.com";
     private static final Pattern INSTANCE_ARN_PATTERN = Pattern.compile("arn:" + AwsArnUtils.PARTITION_REGEX + ":sso:::instance/(?:sso)?ins-[a-zA-Z0-9-.]{16}");
     private static final Pattern PERMISSION_SET_NAME = Pattern.compile("[\\w+=,.@-]+");
     private static final Pattern PERMISSION_SET_ARN = Pattern.compile("arn:" + AwsArnUtils.PARTITION_REGEX + ":sso:::permissionSet/(?:sso)?ins-[a-zA-Z0-9-.]{16}/ps-[a-zA-Z0-9-./]{16}");
@@ -269,23 +271,53 @@ public class SsoAdminService implements Resettable, StoredResourceArns {
     public String getIdentityStoreId() { return IDENTITY_STORE_ID; }
 
     public boolean hasIdentityStore(String identityStoreId) {
+        return instanceHoldingIdentityStore(identityStoreId).isPresent();
+    }
+
+    /**
+     * How an account may use an identity store, as the IAM Identity Center User Guide gives it: the account its
+     * instance belongs to, and a delegated administrator for IAM Identity Center in an organization instance's
+     * organization, in full; another account of that organization only to read ("Member accounts have access to
+     * Read actions on both the sso-directory and identitystore namespaces"); any other account not at all. A store
+     * no instance holds is not IAM Identity Center's, and any account uses it in full.
+     */
+    public IdentityStoreAccess identityStoreAccess(String identityStoreId, String callerAccountId) {
+        Optional<SsoInstance> holding = instanceHoldingIdentityStore(identityStoreId);
+        if (holding.isEmpty() || holding.get().ownerAccountId().equals(callerAccountId)) {
+            return IdentityStoreAccess.FULL;
+        }
+        SsoInstance instance = holding.get();
+        boolean member = !instance.accountInstance() && organizationsService
+                .findManagementAccountForResource(callerAccountId)
+                .filter(instance.ownerAccountId()::equals)
+                .isPresent();
+        if (!member) {
+            return IdentityStoreAccess.NONE;
+        }
+        boolean delegated = organizationsService.findAccount(callerAccountId)
+                .map(account -> account.getDelegatedServices().containsKey(SSO_SERVICE_PRINCIPAL))
+                .orElse(false);
+        return delegated ? IdentityStoreAccess.FULL : IdentityStoreAccess.READ;
+    }
+
+    private Optional<SsoInstance> instanceHoldingIdentityStore(String identityStoreId) {
         if (identityStoreId == null) {
-            return false;
+            return Optional.empty();
         }
         // Self-heals like listInstances(): storageFactory.clearAll() wipes `instances` right after
         // clear() re-seeds it, so /state/reset otherwise leaves the bootstrap instance missing.
         ensureBootstrapInstance(defaultAccountId, defaultRegion);
-        if (instances.scan(key -> true).stream()
-                .anyMatch(instance -> identityStoreId.equals(instance.identityStoreId()))) {
-            return true;
+        Optional<SsoInstance> stored = instances.scan(key -> true).stream()
+                .filter(instance -> identityStoreId.equals(instance.identityStoreId()))
+                .findFirst();
+        if (stored.isPresent() || !(instances instanceof AccountAwareStorageBackend<?> accountAware)) {
+            return stored;
         }
-        if (instances instanceof AccountAwareStorageBackend<?> accountAware) {
-            return accountAware.scanAllAccounts().stream()
-                    .filter(SsoInstance.class::isInstance)
-                    .map(SsoInstance.class::cast)
-                    .anyMatch(instance -> identityStoreId.equals(instance.identityStoreId()));
-        }
-        return false;
+        return accountAware.scanAllAccounts().stream()
+                .filter(SsoInstance.class::isInstance)
+                .map(SsoInstance.class::cast)
+                .filter(instance -> identityStoreId.equals(instance.identityStoreId()))
+                .findFirst();
     }
 
     void ensureBootstrapInstance(String ownerAccountId, String region) {

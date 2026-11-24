@@ -148,10 +148,46 @@ class IdentityStoreIntegrationTest {
                 .body("UserName", equalTo("immutable@example.com"));
     }
 
+    /**
+     * The default account's IAM Identity Center instance holds its identity store, which an account outside that
+     * account's organization cannot see, and a store no instance holds stays usable by any account.
+     */
+    @Test
+    void anotherAccountCannotSeeTheDefaultAccountsIdentityStore() {
+        String outsider = "AWS4-HMAC-SHA256 Credential=210987654321/20260904/us-east-1/identitystore/aws4_request";
+        String owned = "d-9067f2a3c1";
+        String userId = json("AWSIdentityStore.CreateUser",
+                "{\"IdentityStoreId\":\"" + owned + "\",\"UserName\":\"owner-only@example.com\","
+                        + "\"DisplayName\":\"Owner Only\"}")
+                .statusCode(200).extract().path("UserId");
+
+        json(outsider, "AWSIdentityStore.DescribeUser",
+                "{\"IdentityStoreId\":\"" + owned + "\",\"UserId\":\"" + userId + "\"}")
+                .statusCode(400)
+                .body("__type", equalTo("ResourceNotFoundException"))
+                .body("ResourceType", equalTo("IDENTITY_STORE"));
+        json(outsider, "AWSIdentityStore.ListUsers", "{\"IdentityStoreId\":\"" + owned + "\"}")
+                .statusCode(400).body("__type", equalTo("ResourceNotFoundException"));
+        json(outsider, "AWSIdentityStore.CreateUser",
+                "{\"IdentityStoreId\":\"" + owned + "\",\"UserName\":\"intruder@example.com\","
+                        + "\"DisplayName\":\"Intruder\"}")
+                .statusCode(400).body("__type", equalTo("ResourceNotFoundException"));
+        json(outsider, "AWSIdentityStore.ListUsers", "{\"IdentityStoreId\":\"" + STORE + "\"}")
+                .statusCode(200);
+
+        json("AWSIdentityStore.DeleteUser",
+                "{\"IdentityStoreId\":\"" + owned + "\",\"UserId\":\"" + userId + "\"}")
+                .statusCode(200);
+    }
+
     private static ValidatableResponse json(String target, String body) {
+        return json(AUTH, target, body);
+    }
+
+    private static ValidatableResponse json(String auth, String target, String body) {
         return given()
                 .contentType(TYPE)
-                .header("Authorization", AUTH)
+                .header("Authorization", auth)
                 .header("X-Amz-Target", target)
                 .body(body)
                 .post("/")

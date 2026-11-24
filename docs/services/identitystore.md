@@ -42,6 +42,8 @@ Groups, users, and group memberships are persisted through `StorageFactory` and 
 
 Deleting a user or group removes its related local group memberships so subsequent membership queries do not retain dangling references.
 
+An identity store an IAM Identity Center instance holds belongs to that instance's account, as the IAM Identity Center User Guide describes: that account, and a delegated administrator for IAM Identity Center in an organization instance's organization, use it in full; another account of that organization can only read it ("Member accounts have access to Read actions on both the sso-directory and identitystore namespaces"), and a `Create`, `Update` or `Delete` action from it is refused with `AccessDeniedException`; any other account gets `ResourceNotFoundException` with `ResourceType` `IDENTITY_STORE`. A store no instance holds can be used by any account.
+
 ## IAM Identity Center SCIM
 
 Floci also accepts IAM Identity Center SCIM v2 requests under `/{tenant_id}/scim/v2`. SCIM requests require the AWS-supported `Authorization: Bearer <token>` authentication shape. Because Floci does not provision real IAM Identity Center access tokens, it validates against the configured local token. The default is `floci-scim-token`; set `FLOCI_SERVICES_IDENTITYSTORE_SCIM_BEARER_TOKEN` to override it. The tenant must also resolve to an existing IAM Identity Center identity store.
